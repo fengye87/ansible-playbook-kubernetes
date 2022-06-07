@@ -1,0 +1,190 @@
+- hosts: all
+  become: yes
+  tasks:
+    - name: Assign inventory name to hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Disable SELinux at boot
+      selinux:
+        state: disabled
+      failed_when: false
+
+    - name: Stop SELinux
+      command: setenforce 0
+      failed_when: false
+
+    - name: Stop firewalld and disable it at boot
+      systemd:
+        name: firewalld
+        state: stopped
+        enabled: no
+      failed_when: false
+
+    - name: Stop swap
+      command: swapoff -a
+
+    - name: Disable swap at boot
+      replace:
+        path: /etc/fstab
+        regexp: ^([^#].*?\sswap\s+sw\s+.*)$
+        replace: '# \1'
+
+    - name: Enable required kernel modules at boot
+      lineinfile:
+        path: /etc/modules-load.d/containerd.conf
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Load required kernel modules
+      modprobe:
+        name: "{{ item }}"
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Setup required sysctl params
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+      loop:
+        - name: net.bridge.bridge-nf-call-iptables
+          value: "1"
+        - name: net.ipv4.ip_forward
+          value: "1"
+        - name: net.bridge.bridge-nf-call-ip6tables
+          value: "1"
+
+    - name: Add Docker repository
+      get_url:
+        url: https://download.docker.com/linux/centos/docker-ce.repo
+        dest: /etc/yum.repos.d/docker-ce.repo
+
+    - name: Install containerd
+      yum:
+        name: containerd.io
+
+    - name: Get containerd default config
+      command: containerd config default
+      register: get_containerd_default_config
+
+    - name: Set containerd config
+      copy:
+        content: "{{ get_containerd_default_config.stdout }}"
+        dest: /etc/containerd/config.toml
+      register: set_containerd_config
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+      when: set_containerd_config.changed
+
+    - name: Start containerd and enable it at boot
+      systemd:
+        name: containerd
+        state: started
+        enabled: yes
+
+    - name: Copy harbor CA cert
+      copy:
+        src: harbor-ca.crt
+        dest: /etc/pki/ca-trust/source/anchors/harbor-ca.crt
+      register: copy_harbor_ca_cert
+
+    - name: Update CA trust
+      command: update-ca-trust
+      when: copy_harbor_ca_cert.changed
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+      when: copy_harbor_ca_cert.changed
+
+    - name: Add Kubernetes repository
+      copy:
+        content: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-$basearch
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+          exclude=kubelet kubeadm kubectl
+        dest: /etc/yum.repos.d/kubernetes.repo
+
+    - name: Install Kubernetes packages
+      yum:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+          - iproute-tc
+        disable_excludes: kubernetes
+
+    - name: Start kubelet and enable it at boot
+      systemd:
+        name: kubelet
+        state: started
+        enabled: yes
+
+    - name: Initialize Kubernetes master node
+      command:
+        cmd: kubeadm init {{ kubernetes_kubeadm_init_extra_args | default('') }}
+        creates: /etc/kubernetes/admin.conf
+      when: kubernetes_role == 'master'
+
+    - name: Create kubeconfig directory
+      file:
+        path: ~/.kube
+        state: directory
+      when: kubernetes_role == 'master'
+
+    - name: Symlink kubeconfig
+      file:
+        src: /etc/kubernetes/admin.conf
+        dest: ~/.kube/config
+        state: link
+      when: kubernetes_role == 'master'
+
+    - name: Fetch kubeconfig
+      fetch:
+        src: ~/.kube/config
+        dest: kubeconfig
+        flat: yes
+      when: kubernetes_role == 'master'
+
+    - name: Allow pods on master node
+      command: kubectl taint nodes --all node-role.kubernetes.io/master-
+      when: kubernetes_role == 'master'
+      failed_when: false
+
+    - name: Get kubeadm join command
+      command: kubeadm token create --print-join-command
+      when: kubernetes_role == 'master'
+      register: get_kubeadm_join_command
+
+    - name: Set kubeadm join command globally
+      set_fact:
+        kubernetes_join_command: "{{ get_kubeadm_join_command.stdout }}"
+      when: get_kubeadm_join_command.stdout is defined
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      with_items: "{{ groups['all'] }}"
+
+    - name: Join Kubernetes node
+      command:
+        cmd: "{{ kubernetes_join_command }}"
+        creates: /etc/kubernetes/kubelet.conf
+      when: kubernetes_role == 'node'
+
+    - name: Install NFS & iSCSI utils
+      yum:
+        name:
+          - nfs-utils
+          - iscsi-initiator-utils

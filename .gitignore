@@ -1,0 +1,5 @@
+hosts.ini
+kubeconfig
+
+# https://raw.githubusercontent.com/github/gitignore/master/Global/Ansible.gitignore
+*.retry
