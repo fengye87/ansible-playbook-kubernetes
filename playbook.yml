@@ -89,22 +89,6 @@
         state: started
         enabled: yes
 
-    - name: Copy harbor CA cert
-      copy:
-        src: harbor-ca.crt
-        dest: /etc/pki/ca-trust/source/anchors/harbor-ca.crt
-      register: copy_harbor_ca_cert
-
-    - name: Update CA trust
-      command: update-ca-trust
-      when: copy_harbor_ca_cert.changed
-
-    - name: Restart containerd
-      systemd:
-        name: containerd
-        state: restarted
-      when: copy_harbor_ca_cert.changed
-
     - name: Add Kubernetes repository
       copy:
         content: |
