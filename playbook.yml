@@ -144,7 +144,10 @@
       when: kubernetes_role == 'master'
 
     - name: Allow pods on master node
-      command: kubectl taint nodes --all node-role.kubernetes.io/master-
+      command: kubectl taint nodes --all node-role.kubernetes.io/"{{ item }}"-
+      loop:
+        - master
+        - control-plane
       when: kubernetes_role == 'master'
       failed_when: false
 
