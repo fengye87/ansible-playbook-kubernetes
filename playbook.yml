@@ -53,9 +53,9 @@
       loop:
         - name: net.bridge.bridge-nf-call-iptables
           value: "1"
-        - name: net.ipv4.ip_forward
-          value: "1"
         - name: net.bridge.bridge-nf-call-ip6tables
+          value: "1"
+        - name: net.ipv4.ip_forward
           value: "1"
 
     - name: Add Docker repository
@@ -75,13 +75,17 @@
       copy:
         content: "{{ get_containerd_default_config.stdout }}"
         dest: /etc/containerd/config.toml
-      register: set_containerd_config
+
+    - name: Set containerd cgroup driver to systemd
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: SystemdCgroup = false
+        replace: SystemdCgroup = true
 
     - name: Restart containerd
       systemd:
         name: containerd
         state: restarted
-      when: set_containerd_config.changed
 
     - name: Start containerd and enable it at boot
       systemd:
@@ -94,12 +98,11 @@
         content: |
           [kubernetes]
           name=Kubernetes
-          baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-$basearch
+          baseurl=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/
           enabled=1
           gpgcheck=1
-          repo_gpgcheck=1
-          gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
-          exclude=kubelet kubeadm kubectl
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
+          exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         dest: /etc/yum.repos.d/kubernetes.repo
 
     - name: Install Kubernetes packages
@@ -108,7 +111,6 @@
           - kubelet
           - kubeadm
           - kubectl
-          - iproute-tc
         disable_excludes: kubernetes
 
     - name: Start kubelet and enable it at boot
