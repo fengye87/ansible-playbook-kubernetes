@@ -124,7 +124,7 @@
 
     - name: Set Kubernetes version
       set_fact:
-        kubernetes_version: "{{ kubernetes_version | default('v1.30') }}"
+        kubernetes_version: "{{ kubernetes_version | default('v1.31') }}"
 
     - name: Add Kubernetes repository (RedHat)
       copy:
@@ -184,24 +184,32 @@
         creates: /etc/kubernetes/admin.conf
       when: kubernetes_role == 'master'
 
+    - name: Fetch kubeconfig
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: kubeconfig
+        flat: true
+      when: kubernetes_role == 'master'
+
     - name: Create kubeconfig directory
       file:
         path: ~/.kube
         state: directory
+      become: false
       when: kubernetes_role == 'master'
 
-    - name: Symlink kubeconfig
-      file:
+    - name: Get kubeconfig
+      slurp:
         src: /etc/kubernetes/admin.conf
-        dest: ~/.kube/config
-        state: link
+      register: get_kubeconfig
       when: kubernetes_role == 'master'
 
-    - name: Fetch kubeconfig
-      fetch:
-        src: ~/.kube/config
-        dest: kubeconfig
-        flat: true
+    - name: Copy kubeconfig
+      copy:
+        content: "{{ get_kubeconfig.content | b64decode }}"
+        dest: ~/.kube/config
+        mode: 0600
+      become: false
       when: kubernetes_role == 'master'
 
     - name: Allow pods on master node
@@ -209,6 +217,7 @@
       loop:
         - master
         - control-plane
+      become: false
       when: kubernetes_role == 'master'
       failed_when: false
 
@@ -231,17 +240,31 @@
         creates: /etc/kubernetes/kubelet.conf
       when: kubernetes_role == 'node'
 
-    - name: Install NFS & iSCSI utils (RedHat)
+    - name: Install NFS, iSCSI & NVMe utils (RedHat)
       yum:
         name:
           - nfs-utils
           - iscsi-initiator-utils
+          - nvme-cli
       when: ansible_os_family == 'RedHat'
 
-    - name: Install NFS & iSCSI utils (Debian)
+    - name: Install NFS, iSCSI & NVMe utils (Debian)
       apt:
         name:
           - nfs-common
           - open-iscsi
+          - nvme-cli
         update_cache: true
       when: ansible_os_family == 'Debian'
+
+    - name: Load NVMe TCP kernel module
+      modprobe:
+        name: nvme_tcp
+        state: present
+        persistent: present
+
+    - name: Load NVMe RDMA kernel module
+      modprobe:
+        name: nvme_rdma
+        state: present
+        persistent: present
