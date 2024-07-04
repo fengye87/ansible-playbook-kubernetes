@@ -22,4 +22,6 @@ ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i hosts.ini -k playbook.yml --
 
 ```bash
 ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i hosts.ini -k playbook.yml --extra-vars kubernetes_kubeadm_init_extra_args=--skip-phases=addon/kube-proxy
+# or
+ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i hosts.ini -k playbook.yml --extra-vars kubernetes_kubeadm_init_extra_args=--pod-network-cidr=172.16.0.0/16
 ```

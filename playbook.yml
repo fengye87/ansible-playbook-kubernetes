@@ -231,17 +231,31 @@
         creates: /etc/kubernetes/kubelet.conf
       when: kubernetes_role == 'node'
 
-    - name: Install NFS & iSCSI utils (RedHat)
+    - name: Install NFS, iSCSI & NVMe utils (RedHat)
       yum:
         name:
           - nfs-utils
           - iscsi-initiator-utils
+          - nvme-cli
       when: ansible_os_family == 'RedHat'
 
-    - name: Install NFS & iSCSI utils (Debian)
+    - name: Install NFS, iSCSI & NVMe utils (Debian)
       apt:
         name:
           - nfs-common
           - open-iscsi
+          - nvme-cli
         update_cache: true
       when: ansible_os_family == 'Debian'
+
+    - name: Load NVMe TCP kernel module
+      modprobe:
+        name: nvme_tcp
+        state: present
+        persistent: present
+
+    - name: Load NVMe RDMA kernel module
+      modprobe:
+        name: nvme_rdma
+        state: present
+        persistent: present
