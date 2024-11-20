@@ -5,21 +5,26 @@
       hostname:
         name: "{{ inventory_hostname }}"
 
-    - name: Disable SELinux at boot
+    - name: Disable SELinux at boot (RedHat)
       selinux:
         state: disabled
-      failed_when: false
+      when: ansible_os_family == 'RedHat'
 
-    - name: Stop SELinux
+    - name: Stop SELinux (RedHat)
       command: setenforce 0
-      failed_when: false
+      when: ansible_os_family == 'RedHat'
+
+    - name: Get list of services
+      service_facts:
 
     - name: Stop firewalld and disable it at boot
       systemd:
         name: firewalld
         state: stopped
         enabled: no
-      failed_when: false
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - ansible_facts.services['firewalld.service'].status != 'not-found'
 
     - name: Stop swap
       command: swapoff -a
@@ -76,11 +81,16 @@
         update_cache: true
       when: ansible_os_family == 'Debian'
 
+    - name: Create APT keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+
     - name: Add Docker repository (Debian)
       shell: |
         set -euxo pipefail
-        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+        curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg -o /etc/apt/keyrings/docker.asc
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_distribution | lower }} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
       args:
         executable: /bin/bash
       when: ansible_os_family == 'Debian'
