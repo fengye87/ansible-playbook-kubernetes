@@ -1,4 +1,4 @@
-hosts.ini
+inventory.ini
 kubeconfig
 
 # https://raw.githubusercontent.com/github/gitignore/master/Global/Ansible.gitignore
