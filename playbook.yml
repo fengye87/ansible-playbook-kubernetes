@@ -1,47 +1,63 @@
 - hosts: all
-  become: true
   tasks:
-    - name: Assign inventory name to hostname
+    - name: Setting hostname
       hostname:
         name: "{{ inventory_hostname }}"
+      become: true
 
-    - name: Disable SELinux at boot (RedHat)
+    - name: Installing required packages (Debian)
+      apt:
+        name:
+          - curl
+          - gpg
+        update_cache: true
+      become: true
+      when: ansible_os_family == 'Debian'
+
+    - name: Disabling SELinux at boot (RedHat)
       selinux:
         state: disabled
+      become: true
       when: ansible_os_family == 'RedHat'
 
-    - name: Stop SELinux (RedHat)
+    - name: Stopping SELinux (RedHat)
       command: setenforce 0
+      become: true
       when: ansible_os_family == 'RedHat'
 
-    - name: Get list of services
+    - name: Getting list of services
       service_facts:
+      become: true
 
-    - name: Stop firewalld and disable it at boot
+    - name: Stopping firewalld and disabling it at boot
       systemd:
         name: firewalld
         state: stopped
-        enabled: no
+        enabled: false
+      become: true
       when:
         - "'firewalld.service' in ansible_facts.services"
         - ansible_facts.services['firewalld.service'].status != 'not-found'
 
-    - name: Stop swap
+    - name: Stopping swap
       command: swapoff -a
+      become: true
 
-    - name: Disable swap at boot
+    - name: Disabling swap at boot
       replace:
         path: /etc/fstab
         regexp: ^([^#].*\sswap\s.*)$
         replace: '# \1'
+      become: true
 
-    - name: Disable swap.target (Debian)
+    - name: Disabling swap.target (Debian)
       systemd:
         name: swap.target
         masked: true
+      become: true
       when: ansible_os_family == 'Debian'
 
-    - name: Enable required kernel modules at boot
+    - name: Enabling required kernel modules at boot
       lineinfile:
         path: /etc/modules-load.d/containerd.conf
         line: "{{ item }}"
@@ -49,15 +65,17 @@
       loop:
         - overlay
         - br_netfilter
+      become: true
 
-    - name: Load required kernel modules
+    - name: Loading required kernel modules
       modprobe:
         name: "{{ item }}"
       loop:
         - overlay
         - br_netfilter
+      become: true
 
-    - name: Setup required sysctl params
+    - name: Setting required sysctl params
       sysctl:
         name: "{{ item.name }}"
         value: "{{ item.value }}"
@@ -68,175 +86,197 @@
           value: "1"
         - name: net.ipv4.ip_forward
           value: "1"
+      become: true
 
-    - name: Add Docker repository (RedHat)
+    - name: Adding Docker repository (RedHat)
       get_url:
         url: https://download.docker.com/linux/centos/docker-ce.repo
         dest: /etc/yum.repos.d/docker-ce.repo
+      become: true
       when: ansible_os_family == 'RedHat'
 
-    - name: Install curl (Debian)
-      apt:
-        name: curl
-        update_cache: true
-      when: ansible_os_family == 'Debian'
+    - name: Replacing $releasever with 7 in Docker repository file (openEuler)
+      replace:
+        path: /etc/yum.repos.d/docker-ce.repo
+        regexp: \$releasever
+        replace: "7"
+      become: true
+      when: ansible_distribution == 'openEuler'
 
-    - name: Create APT keyrings directory
+    - name: Creating Apt keyrings directory (Debian)
       file:
         path: /etc/apt/keyrings
         state: directory
-
-    - name: Add Docker repository (Debian)
-      shell: |
-        set -euxo pipefail
-        curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg -o /etc/apt/keyrings/docker.asc
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_distribution | lower }} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-      args:
-        executable: /bin/bash
+      become: true
       when: ansible_os_family == 'Debian'
 
-    - name: Install containerd (RedHat)
+    - name: Adding Docker repository (Debian)
+      shell:
+        cmd: |
+          set -euxo pipefail
+          curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg -o /etc/apt/keyrings/docker.asc
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_distribution | lower }} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+        executable: /bin/bash
+        creates: /etc/apt/sources.list.d/docker.list
+      become: true
+      when: ansible_os_family == 'Debian'
+
+    - name: Installing containerd (RedHat)
       yum:
         name: containerd.io
+      become: true
+      register: install_containerd_redhat
       when: ansible_os_family == 'RedHat'
 
-    - name: Install containerd (Debian)
+    - name: Installing containerd (Debian)
       apt:
         name: containerd.io
         update_cache: true
+      become: true
+      register: install_containerd_debian
       when: ansible_os_family == 'Debian'
 
-    - name: Get containerd default config
-      command: containerd config default
-      register: get_containerd_default_config
-
-    - name: Set containerd config
-      copy:
-        content: "{{ get_containerd_default_config.stdout }}"
-        dest: /etc/containerd/config.toml
-
-    - name: Set containerd cgroup driver to systemd
-      replace:
-        path: /etc/containerd/config.toml
-        regexp: SystemdCgroup = false
-        replace: SystemdCgroup = true
-
-    - name: Restart containerd
-      systemd:
-        name: containerd
-        state: restarted
-
-    - name: Start containerd and enable it at boot
+    - name: Starting containerd and enabling it at boot
       systemd:
         name: containerd
         state: started
         enabled: true
+      become: true
 
-    - name: Set Kubernetes version
+    - name: Getting containerd default config
+      command: containerd config default
+      register: get_containerd_default_config
+      when: install_containerd_redhat.changed or install_containerd_debian.changed
+
+    - name: Setting containerd config
+      copy:
+        content: "{{ get_containerd_default_config.stdout }}"
+        dest: /etc/containerd/config.toml
+      become: true
+      register: set_containerd_config
+      when: install_containerd_redhat.changed or install_containerd_debian.changed
+
+    - name: Setting containerd cgroup driver to systemd
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: SystemdCgroup = false
+        replace: SystemdCgroup = true
+      become: true
+      register: set_containerd_cgroup_driver
+
+    - name: Restarting containerd
+      systemd:
+        name: containerd
+        state: restarted
+      become: true
+      when: set_containerd_config.changed or set_containerd_cgroup_driver.changed
+
+    - name: Setting Kubernetes version
       set_fact:
-        kubernetes_version: "{{ kubernetes_version | default('v1.31') }}"
+        k8s_version: "{{ k8s_version | default('1.32') }}"
 
-    - name: Add Kubernetes repository (RedHat)
+    - name: Adding Kubernetes repository (RedHat)
       copy:
         content: |
           [kubernetes]
           name=Kubernetes
-          baseurl=https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/rpm/
+          baseurl=https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/rpm/
           enabled=1
           gpgcheck=1
-          gpgkey=https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/rpm/repodata/repomd.xml.key
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/rpm/repodata/repomd.xml.key
           exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         dest: /etc/yum.repos.d/kubernetes.repo
+      become: true
       when: ansible_os_family == 'RedHat'
 
-    - name: Install gpg (Debian)
-      apt:
-        name: gpg
-        update_cache: true
-      when: ansible_os_family == 'Debian'
-
-    - name: Add Kubernetes repository (Debian)
-      shell: |
-        set -euxo pipefail
-        curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg --yes
-        echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/deb/ /' > /etc/apt/sources.list.d/kubernetes.list
-      args:
+    - name: Adding Kubernetes repository (Debian)
+      shell:
+        cmd: |
+          set -euxo pipefail
+          curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg --yes
+          echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
         executable: /bin/bash
+        creates: /etc/apt/sources.list.d/kubernetes.list
+      become: true
       when: ansible_os_family == 'Debian'
 
-    - name: Install Kubernetes packages (RedHat)
+    - name: Installing Kubernetes packages (RedHat)
       yum:
         name:
           - kubelet
           - kubeadm
           - kubectl
         disable_excludes: kubernetes
+      become: true
       when: ansible_os_family == 'RedHat'
 
-    - name: Install Kubernetes packages (Debian)
+    - name: Installing Kubernetes packages (Debian)
       apt:
         name:
           - kubelet
           - kubeadm
           - kubectl
         update_cache: true
+      become: true
       when: ansible_os_family == 'Debian'
 
-    - name: Start kubelet and enable it at boot
+    - name: Starting kubelet and enabling it at boot
       systemd:
         name: kubelet
         state: started
         enabled: true
+      become: true
 
-    - name: Initialize Kubernetes master node
+    - name: Initializing Kubernetes master node
       command:
-        cmd: kubeadm init {{ kubernetes_kubeadm_init_extra_args | default('') }}
+        cmd: kubeadm init {{ k8s_kubeadm_init_extra_args | default('') }}
         creates: /etc/kubernetes/admin.conf
-      when: kubernetes_role == 'master'
+      become: true
+      when: k8s_role == 'master'
 
-    - name: Fetch kubeconfig
-      fetch:
-        src: /etc/kubernetes/admin.conf
-        dest: kubeconfig
-        flat: true
-      when: kubernetes_role == 'master'
-
-    - name: Create kubeconfig directory
-      file:
-        path: ~/.kube
-        state: directory
-      become: false
-      when: kubernetes_role == 'master'
-
-    - name: Get kubeconfig
+    - name: Getting kubeconfig
       slurp:
         src: /etc/kubernetes/admin.conf
+      become: true
       register: get_kubeconfig
-      when: kubernetes_role == 'master'
+      when: k8s_role == 'master'
 
-    - name: Copy kubeconfig
+    - name: Creating kubeconfig directory
+      file:
+        path: "{{ ansible_env.HOME }}/.kube"
+        state: directory
+      when: k8s_role == 'master'
+
+    - name: Copying kubeconfig
       copy:
         content: "{{ get_kubeconfig.content | b64decode }}"
-        dest: ~/.kube/config
+        dest: "{{ ansible_env.HOME }}/.kube/config"
         mode: 0600
-      become: false
-      when: kubernetes_role == 'master'
+      when: k8s_role == 'master'
 
-    - name: Allow pods on master node
+    - name: Allowing pods on master node
       command: kubectl taint nodes --all node-role.kubernetes.io/"{{ item }}"-
       loop:
         - master
         - control-plane
-      become: false
-      when: kubernetes_role == 'master'
+      when: k8s_role == 'master'
       failed_when: false
 
-    - name: Get kubeadm join command
+    - name: Fetching kubeconfig
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: kubeconfig
+        flat: true
+      become: true
+      when: k8s_role == 'master'
+
+    - name: Getting kubeadm join command
       command: kubeadm token create --print-join-command
-      when: kubernetes_role == 'master'
+      become: true
+      when: k8s_role == 'master'
       register: get_kubeadm_join_command
 
-    - name: Set kubeadm join command globally
+    - name: Setting kubeadm join command globally
       set_fact:
         kubernetes_join_command: "{{ get_kubeadm_join_command.stdout }}"
       when: get_kubeadm_join_command.stdout is defined
@@ -244,37 +284,9 @@
       delegate_facts: true
       with_items: "{{ groups['all'] }}"
 
-    - name: Join Kubernetes node
+    - name: Joining Kubernetes node
       command:
         cmd: "{{ kubernetes_join_command }}"
         creates: /etc/kubernetes/kubelet.conf
-      when: kubernetes_role == 'node'
-
-    - name: Install NFS, iSCSI & NVMe utils (RedHat)
-      yum:
-        name:
-          - nfs-utils
-          - iscsi-initiator-utils
-          - nvme-cli
-      when: ansible_os_family == 'RedHat'
-
-    - name: Install NFS, iSCSI & NVMe utils (Debian)
-      apt:
-        name:
-          - nfs-common
-          - open-iscsi
-          - nvme-cli
-        update_cache: true
-      when: ansible_os_family == 'Debian'
-
-    - name: Load NVMe TCP kernel module
-      modprobe:
-        name: nvme_tcp
-        state: present
-        persistent: present
-
-    - name: Load NVMe RDMA kernel module
-      modprobe:
-        name: nvme_rdma
-        state: present
-        persistent: present
+      become: true
+      when: k8s_role == 'node'
